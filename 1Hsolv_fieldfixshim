@@ -1,0 +1,503 @@
+/******* -*-C++-*- **********************************************/
+/*  au_1H_fieldfix_shim      10.20.2023                         */
+/*  Calibrate fieldbyHz parameter before using									*/
+/****************************************************************/
+/*  Short Description :                                         */
+/*  AU program for adjusting the field and shimming samples     */
+/*  in protonated solvents, for use in automation.              */
+/****************************************************************/
+/*  Keywords :                                                  */
+/*  protonated solvents, shimming, field                        */
+/****************************************************************/
+/****************************************************************/
+/*  Name    Date    Modification:                               */
+/*  AG      102023  created                                     */
+/*  AG      111924  better shim and ref for multi-peak solvents */
+/*                  combined TS versions using #if and #ifdef  	*/
+/*                  now returns -1 if shim fails                */
+/****************************************************************/
+/*
+$Id:$
+*/
+
+/*  Specify what functions work with your version of Topspin       */
+#define READPEAKSDEFINED 1 /*  Typically 0 for TS < 3, 1 for TS 3 or higher -- try the other value if compilation fails         */
+#define BSMSDOUBLEDEFINED 1 /*  Typically 0 for TS < 3, 1 for TS 3 or higher -- try the other value if compilation fails        */
+
+#if BSMSDOUBLEDEFINED==0
+	#include <inc/bsms_program>
+#endif
+
+/*Running the program here*/
+AUERR = au_1H_fieldfix_shim(curdat);
+QUIT
+
+/*  Specify the scaling between field units and Hz on this system       */
+/*  This is theoretically the 2H frequency ratio of 0.1535, but should	*/
+/*  be empirically determined										                      	*/
+
+/*double fieldbyHz=0.141; */  /*AV400*/
+double fieldbyHz=0.1413;    /*NEO400*/
+/*double fieldbyHz=0.135;  */    /*AV500*/
+
+/*  Specify 1H solvents and their largest peak frequencies       */ 
+int numofsolvs = 17;
+char a[64]="Acetic-H4", b[64]="Acetone-H6", c[64]="C6H6", d[64]="CH2Cl2", e[64]="CH3CN", f[64]="CHCl3", g[64]="Dioxane-H8", h[64]="DMF-H7", iletter[64]="DMSO-H6", j[64]="Ethanol-H6", k[64]="H2O", l[64]="Isopropanol-H8", m[64]="Methanol-H4", n[64]="Pyr-H5", o[64]="TFE-H3", p[64]="THF-H8", q[64]="Tol-H8" ;
+char *solvlist[17] = {a,b,c,d,e,f,g,h,iletter,j,k,l,m,n,o,p,q}; 
+int numsolvpeakslist[17] = { 1,1,1,1,1,1,1,2,1,2,1,1,2,3,1,2,1 }; /* number of tall solvent multiplets (just # that may conceivably have the highest intensity) */
+int highorlowlist[17] =    { 1,1,1,1,1,1,1,3,1,3,1,1,3,2,1,3,1 }; /* 0 for no selwid, 1 for tallest peak but use selwid, 2 for most downfield peak, 3 for most upfield peak */
+int multiplicitylist[17] = { 1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,1,1}; /* 1 for use tallest part of multiplet (singlet, triplet etc), 2 for average two tallest (doublet etc), 3 for average 4 tallest (messy multiplets)*/
+double solvpeaklist[17] = {2.04, 2.09, 7.15, 5.33, 1.96, 7.26, 3.53, 2.746, 2.54, 1.11, 4.79, 1.15, 3.34, 8.74, 3.88, 1.79, 2.11};  /* shift to set specified peak to */  
+
+/*
+Note that as of 2024 these shifts are mostly a little wrong! They are ignoring isotope effects which in some cases are 
+quite significant! Getting more accurate values here is a work in progress.
+*/
+
+/*  Define some global constants and variables         */
+#define TLL 1024
+int debugflag = 0;
+char *envpnt, path[PATH_MAX], del[PATH_MAX];
+FILE *fptr;
+
+/*Functions ****************************************************/
+
+/*orderPeaks***************************************************
+groups peaks into multiplets (roughly) and orders these by intensity
+excludes peaks shorter than 1/10 the height of the tallest signal */
+
+double* orderPeaks(const char* curdat){
+
+PP
+ERRORABORT
+
+double  int_1=0.0, int_2=0.0, int_3=0.0, int_4=0.0, ppm_1=0.0, ppm_2=0.0, ppm_3=0.0, ppm_4=0.0;
+double* ppmlist = malloc(4*sizeof(double));
+float   offset, plw1, PSH, PSP, IPS;
+int numPeaks, exit_par=0;
+double PeakIntensityList[500], PeakFreqPPMList[500], PeakIntensityShortList[500], PeakFreqPPMShortList[500];;
+double peakIntensity, peakFreqPPM, peakThresh=0.0, maxJHz, maxJppm, magnetfield;
+
+maxJHz=20; /*   max J coupling for solvent peaks     */ 
+FETCHPARS("BF1", &magnetfield)
+maxJppm=maxJHz/magnetfield;
+
+/*  Get peak list or at least value of numPeaks	*/
+
+#if READPEAKSDEFINED==1
+	numPeaks = readPeakList(PROCPATH(0));
+#else
+{
+	XCMD("sendgui convertpeaklist txt")
+	ERRORABORT
+		
+	#ifdef PROCPATH
+	{	(void)sprintf(path,"%s/peak.txt",PROCPATH(0)); }
+	#else
+	{ (void)sprintf(path,"%s/data/%s/nmr/%s/%d/pdata/%d/peak.txt",disk,user,name,expno,procno); }
+	#endif					
+		    		    
+	fptr=fopen(path,"r");
+	
+	if (fptr==NULL)
+	{
+		Proc_err(DEF_ERR_OPT,"Cannot open %s for reading",path);
+		ABORT
+	}
+	TIMES(4)
+	
+	fgets(del,sizeof(del),fptr);
+	END
+
+	int i=0;
+	while (fscanf(fptr,"%*d %*f %f %f %f",&PSH,&PSP,&IPS)>2)
+	{
+		PeakIntensityList[i]=IPS;
+		PeakFreqPPMList[i]=PSP;
+		i=i+1;
+	}
+	
+	fclose(fptr);
+	unlink(path);
+	numPeaks=i;
+}
+#endif
+
+/*  Get the height of the highest peak, then use 1/10 of that as a threshold for peaks considered	*/
+int i=0;
+while (i<numPeaks)
+{
+	#if READPEAKSDEFINED==1
+		peakIntensity = getPeakIntensity(i);
+	#else
+		peakIntensity = PeakIntensityList[i];
+	#endif
+	if (peakIntensity>peakThresh)	{ peakThresh=peakIntensity; }
+	i++;
+}
+peakThresh=peakThresh/10;
+
+/*  Sort peaks into multiplets - this may produce extra 'multiplets' for high multiplicity but is probably fine	*/
+i=0;
+int j=0;
+PeakFreqPPMShortList[0]=-400;
+PeakIntensityShortList[0]=0;
+
+while (i<numPeaks)
+{
+	#if READPEAKSDEFINED==1
+		peakIntensity = getPeakIntensity(i);
+		peakFreqPPM   = getPeakFreqPPM(i);
+	#else
+		peakIntensity = PeakIntensityList[i];
+		peakFreqPPM   = PeakFreqPPMList[i];
+	#endif
+	
+	if (peakIntensity > peakThresh ) 
+	{
+	if ( abs(peakFreqPPM - PeakFreqPPMShortList[j]) > maxJppm )
+		{
+		j++;
+		PeakFreqPPMShortList[j]=peakFreqPPM;
+		PeakIntensityShortList[j]=peakIntensity;
+		}
+	else if (peakIntensity > PeakIntensityShortList[j] )
+		{
+		PeakFreqPPMShortList[j]=peakFreqPPM;
+		PeakIntensityShortList[j]=peakIntensity;
+		}
+	}
+	i++;
+}
+
+/*  Sort multiplets into four tallest	*/
+
+i=0;
+while (i<j)
+{
+	peakIntensity = PeakIntensityShortList[i+1];
+	peakFreqPPM   = PeakFreqPPMShortList[i+1];
+	
+    if (peakIntensity > int_1)
+    {
+	int_4=int_3;
+	ppm_4=ppm_3;
+	int_3=int_2;
+	ppm_3=ppm_2;
+	int_2=int_1;
+	ppm_2=ppm_1;                                        
+	int_1 = peakIntensity;
+	ppm_1 = peakFreqPPM;   
+    }
+	else if (peakIntensity > int_2) 
+	{
+	int_4=int_3;
+	ppm_4=ppm_3;
+	int_3=int_2;
+	ppm_3=ppm_2;											
+	int_2 = peakIntensity; 
+	ppm_2 = peakFreqPPM; 	
+	}
+	else if (peakIntensity > int_3) 
+	{
+	int_4=int_3;
+	ppm_4=ppm_3;			
+	int_3 = peakIntensity; 
+	ppm_3 = peakFreqPPM;  	
+	}	
+	else if (peakIntensity > int_4) 
+	{
+	int_4 = peakIntensity; 
+	ppm_4 = peakFreqPPM;
+	ppmlist[3]=ppm_4;      	
+	}
+	i++;	
+}
+
+  ppmlist[0]=ppm_1;   
+	ppmlist[1]=ppm_2;      		
+  ppmlist[2]=ppm_3;      	
+	ppmlist[3]=ppm_4;   
+		
+  #if READPEAKSDEFINED==1
+		freePeakList();	/*This command is important so we can re-run PP again later */
+	#endif
+return(ppmlist);
+}
+
+/*getSolvPeak***************************************************
+Finds the appropriate solvent peak to shim/reference on. Sorts
+peaks by height, then the four highest peaks by shift, then
+chooses the highest or lowest peaks (depending on highorlow) 
+zooms in, then returns the highest (or avg of two highest if 
+doublet, quartet, etc) shift */
+
+double getSolvPeak(int numsolvpeaks, int highorlow, int multiplicity, const char* curdat)
+{
+double  byshift_1=-100, byshift_2=-100, byshift_3=-100, byshift_4=-100;
+double  ppm_ref, ppm_temp;
+double peakIntensity, peakFreqPPM;
+double *ppmlist;
+double byshift_list[4];
+int i=0;
+
+ppmlist=orderPeaks(curdat);
+/*sort the up-to four tallest peaks by shift */
+while (i<numsolvpeaks)
+{
+    peakFreqPPM = ppmlist[i];
+
+    if (peakFreqPPM > byshift_1)
+    {
+	byshift_4=byshift_3;
+	byshift_3=byshift_2;    	
+	byshift_2=byshift_1;    	
+	byshift_1=peakFreqPPM;
+    }
+	else if (peakFreqPPM > byshift_2) 
+	{  	
+	byshift_4=byshift_3;		  
+	byshift_3=byshift_2;    	
+	byshift_2=peakFreqPPM;
+	}
+	else if (peakFreqPPM > byshift_3) 
+	{
+	byshift_4=byshift_3;		
+	byshift_3=peakFreqPPM;
+	}
+	else  
+	{
+	byshift_4=peakFreqPPM;
+	}
+	i++;
+}
+
+/* if we want lowest shift */
+if ( highorlow == 3 ) { 
+		
+byshift_list[0] = byshift_1;
+byshift_list[1] = byshift_2;
+byshift_list[2] = byshift_3;
+byshift_list[3] = byshift_4;
+
+ppm_ref=byshift_list[-1+numsolvpeaks]; 
+}
+else {ppm_ref=byshift_1; } /* if we want the highest shift */
+
+/* change window to be just right on top of solvent peak */
+double sf;
+FETCHPARS("SF", &sf);
+double f1p = ppm_ref + 25.0 / sf;
+double f2p = ppm_ref - 25.0 / sf;
+STOREPAR("F2P", f2p)
+STOREPAR("F1P", f1p)
+
+double *ppmlist2 = orderPeaks(curdat); /* order these peaks in the close-up window*/
+
+/*select highest peak, two highest peaks, or 4 highest peaks depending on value of 'multiplicity' */
+if ( multiplicity==1 ) { ppm_ref=ppmlist2[0]; }
+else if ( multiplicity==2) { ppm_ref=(ppmlist2[0]+ppmlist2[1])/2; }
+else { ppm_ref= (ppmlist2[0]+ppmlist2[1]+ppmlist2[2]+ppmlist2[3])/4; }
+
+return(ppm_ref);
+
+}
+
+/*collectspec***************************************************
+function to collect a new spectrum and phase */
+void collectspec(int digmod, const char* curdat)
+{
+	RGA										
+
+#ifdef ZG_OVERWRITE
+	ZG_OVERWRITE
+#else
+	ZG
+#endif
+	
+ERRORABORT
+EF
+ERRORABORT              
+
+if (digmod == 3)
+    APK0
+else
+    APK
+}
+
+/********************************************/
+/* movefield-- moves field to reference */
+ 
+void movefield(int numsolvpeaks, int highorlow, int multiplicity, double solvpeak, double fieldbyHz, const char* curdat) 
+{
+double sf, field_value_double;
+double maxpsh=getSolvPeak(numsolvpeaks, highorlow, multiplicity, curdat);
+int add_to_field_int, field_value;
+
+#if READPEAKSDEFINED==1
+	freePeakList();	/*This command is important so we can re-run PP again later */
+#endif
+
+FETCHPAR("SF", &sf)
+double sfo1 = sf + maxpsh * 1.0e-6;
+maxpsh = maxpsh*sf;
+
+double add_to_field_Hz = maxpsh - solvpeak * sfo1;
+double add_to_field = add_to_field_Hz * fieldbyHz;
+add_to_field_int = (int) add_to_field;
+
+#if BSMSDOUBLEDEFINED==1	 
+	GetBsmsDoubleValue(BSMS_FIELD, &field_value_double);
+	PutBsmsFloatValue(BSMS_FIELD, field_value_double+add_to_field);
+#else
+#ifdef GETBSMSVAL	 
+	GETBSMSVAL(BSN_FIELD,field_value);
+	field_value=field_value + add_to_field_int;
+	PUTBSMSVAL(BSN_FIELD,field_value);
+#endif
+#endif
+
+}
+
+/********************************************/
+/* main function */
+int au_1H_fieldfix_shim(const char* curdat)
+{
+
+/*  Initialize some variables*/
+int     digmod, noofscans, pscal_save, i, numPeaks, highorlow, numsolvpeaks, multiplicity, zgsafety;
+int     expno_orig, procno_orig, add_to_field_int=0, field_value=0, shimfail=0;
+float   offset, plw1;
+double  peakFreqHz, peakFreqPPM, peakIntensity, maxpsh;
+double  f1p, f2p, f1pfull, f2pfull, f1porig, f2porig, sf, sw_p, sfo1, sr, solvpeak=0.0, maxJHz, maxJppm;
+double  add_to_field=0, add_to_field_Hz=0, field_value_double;
+char    solvent[64], topshimcmd[64];
+const char* parname = "FIELD";
+
+FETCHPAR("SOLVENT", solvent)
+
+/*   identify parameters from lists above corresponding to actual solvent     */ 
+int solv_i = 0;   	
+while (solv_i<numofsolvs)    		{
+	if (strcmp(solvent, solvlist[solv_i]) == 0) {
+		solvpeak=solvpeaklist[solv_i]; 
+		numsolvpeaks=numsolvpeakslist[solv_i];
+		highorlow=highorlowlist[solv_i];		
+		multiplicity=multiplicitylist[solv_i];
+		}   	   
+	solv_i++;
+	}
+	if (solvpeak==0){
+		Proc_err(DEF_ERR_OPT,"Solvent not found");
+		ABORT}
+										
+#ifndef ZG_OVERWRITE
+{
+	/* Turn zg safety off if on. Turn it back on at the end. */
+	envpnt = getenv("UXNMR_SAFETY");
+	zgsafety = 0;
+	if (envpnt != NULL)
+	{
+		if (strcasecmp(envpnt, "on") == 0)
+		{
+			zgsafety = 1;
+			CPR_exec("env set UXNMR_SAFETY=off", WAIT_TERM);
+		}
+	}
+}
+#endif
+
+/*   record dataset info, then make new dataset in 900+expno_orig for referencing */ 
+ROTOFF
+expno_orig = expno;
+procno_orig = procno;
+DATASET(name, 900+expno_orig, 1, disk, user);
+
+RPAR("PROTON","all");
+GETPROSOL;
+STOREPAR("NS", 1)    
+STOREPAR("DS", 0)    
+STOREPAR("SOLVENT", solvent)                        
+XCMD("atma")
+FETCHPARS("DIGMOD", &digmod)
+
+/*collect a spectrum and phase*/
+collectspec(digmod, curdat);
+        
+/*********************************************/
+/* store the current plotregion */
+FETCHPAR("F2P", &f2porig)
+FETCHPAR("PSCAL", &pscal_save)
+
+/*********************************************/
+/* define the plotregion as big as */
+/* the complete acquisition region */
+STOREPAR("PSCAL",0)
+FETCHPARS("OFFSET", &offset)
+FETCHPARS("SW_p", &sw_p)
+FETCHPARS("SF", &sf)
+f1pfull = offset;
+f2pfull = f1p - sw_p / sf;
+STOREPAR("F1P", f1pfull)
+STOREPAR("F2P", f2pfull)
+
+ /* run getSolvPeak to find appropriate solvent peak to reference to */
+double ppm_ref=getSolvPeak(numsolvpeaks, highorlow, multiplicity, curdat);
+STOREPAR("F1P", f1pfull)
+STOREPAR("F2P", f2pfull)
+
+ /* shim on solvent peak */
+if (highorlow > 0) { sprintf(topshimcmd, "topshim lockoff 1h durmax=90 ordmax=3 selwid=0.5 O1p=%.*e", 64, ppm_ref); }
+else {sprintf(topshimcmd, "topshim lockoff 1h durmax=90 ordmax=3 O1p=%.*e", 64, ppm_ref); }
+XCMD(topshimcmd)
+
+/*collect a spectrum and phase*/
+collectspec(digmod, curdat);
+
+/* move field */
+movefield(numsolvpeaks, highorlow, multiplicity, solvpeak, fieldbyHz, curdat);
+STOREPAR("F1P", f1pfull)
+STOREPAR("F2P", f2pfull)
+
+/* shim again, having moved field */
+if (highorlow > 0) {sprintf(topshimcmd, "topshim lockoff 1h ordmax=5 selwid=0.5 O1p=%.*e", 64, solvpeak); }
+else {	sprintf(topshimcmd, "topshim lockoff 1h ordmax=5 O1p=%.*e", 64, solvpeak); }
+
+XCMD(topshimcmd) 
+
+if (AUERR < 0) {shimfail=-1;}
+
+/*collect a spectrum and phase*/
+collectspec(digmod, curdat);
+
+/* move field one last time */
+movefield(numsolvpeaks, highorlow, multiplicity, solvpeak, fieldbyHz, curdat);
+STOREPAR("F1P", f1pfull)
+STOREPAR("F2P", f2pfull)
+
+/* One last 1H spectrum, at final field and with final shims */
+collectspec(digmod, curdat);
+PP
+
+/*********************************************/
+/* restore the original plotregion */
+STOREPAR("F2P", f2porig)
+STOREPAR("PSCAL", pscal_save) 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+if (debugflag > 1)  Proc_err(ERROPT_AK_OK, "DEBUG au_1H_fieldfix_shim\nO1 calibration by PP done");
+Show_meta(SM_RAWP | SM_PROCP);
+STOREPAR("SOLVENT", solvent)
+
+#ifndef ZG_OVERWRITE
+{
+/*zgsafety back on */
+if (zgsafety == 1)
+  CPR_exec("env set UXNMR_SAFETY=on", WAIT_TERM);
+}
+#endif
+
+/* Return to original dataset */
+DATASET(name, expno_orig, procno_orig, disk, user);
+
+return(shimfail);
+}   //QUIT
