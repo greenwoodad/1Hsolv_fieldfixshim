@@ -36,9 +36,7 @@ QUIT
 /*  This is theoretically the 2H frequency ratio of 0.1535, but should	*/
 /*  be empirically determined										                      	*/
 
-/*double fieldbyHz=0.141; */  /*AV400*/
-double fieldbyHz=0.1413;    /*NEO400*/
-/*double fieldbyHz=0.135;  */    /*AV500*/
+double fieldbyHz=0.1413;    /*adjust as necessary*/
 
 /*  Specify 1H solvents and their largest peak frequencies       */ 
 int numofsolvs = 17;
