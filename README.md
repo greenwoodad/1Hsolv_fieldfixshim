@@ -29,12 +29,12 @@ Acetic-H4, Acetone-H6, C6H6, CH2Cl2, CH3CN, CHCl3, Dioxane-H8, DMF-H7, DMSO-H6,
 Ethanol-H6, H2O, Isopropanol-H8, Methanol-H4, Pyr-H5, TFE-H3, THF-H8, Tol-H8
 
 Add more if desired. It may be convenient to copy and edit the original 2H 
-versions (freezing points will be approximate). Next, edit the solvents and 
-uncheck "lock solvent" for each.
+versions (boiling/freezing points will be approximate). Next, edit the solvents  
+and uncheck "lock solvent" for each.
 
 ### Determining fieldbyHz value
 
-Insert a sample that produces a tall, sharp peak. Tune/match and shim. Turn 
+Insert a sample that produces a tall, sharp 1H peak. Tune/match and shim. Turn 
 the lock and lock sweep off. Open up the BSMS display (bsmsdisp) and navigate 
 to the lock panel. Collect a series of 1H spectra with a variety of field
 values. Record the peak position in Hz at each field value. Do a linear regression
@@ -47,8 +47,10 @@ this value.
 Open up 1Hsolv_fieldfixshim in a text editor and look at the first few
 lines of code. You can generally use the two default flags:
 
+```sh
 #define READPEAKSDEFINED 1 
 #define BSMSDOUBLEDEFINED 1 
+```
 
 for Topspin 3 and up. For Topspin 2, you will probably need to set these
 to 0. 
@@ -59,22 +61,56 @@ Check <TSHOME>/prog/include/lib/auliba.h for the text 'BsmsDouble' and
 the directory of your Topspin installation for <TSHOME>). Note that
 in Linux you can run 
 
+```sh
 grep BsmsDouble <TSHOME>/prog/include/lib/auliba.h
 grep readPeakList <TSHOME>/prog/include/lib/aulibp.h 
+```
 
 at the terminal and check if there is output. If the command is present in 
 the aulib file, set the flag to '1'. Otherwise set it to '0'. 
 
 Practically, if the program fails to compile with one flag, try the alternative.
 
-### Usage
+### Adding additional solvents
 
-In Topspin, insert your sample, turn the lock-sweep off, specify the (protonated) 
-solvent, and tune/match. You can then run 1Hsolv_fieldfixshim in the command line
-and the macro will set the field and shim. There will be a 1H spectrum in expno
-90X where X is expno you were in when you ran the program.
+If desired, additional solvents can be added by editing lines 42-48 of the macro:
 
-In ICON-NMR,
+1) Add the new solvent to your solvent table if it is not already there.
+2) Increase the integer nomofsolvs on line 42 by 1 and the lengths of the arrays
+   on lines 44-48 as well.
+3) Add another char variable on line 43-- it will look something like:
+   r[64]="New Solvent" where "New Solvent" is the name of the solvent in your
+   solvent table. 
+4) Add the char r (or s, or t, depending on how many you have added) to the end
+   of the solvlist array on line 44. 
+5) Consider (collect if necessary) the 1H spectrum of your solvent. Provide
+   the number of multiplets that could possibly be the tallest depending on 
+   variation in the shimming at the end of the numsolvpeakslist array on line 45.
+   This is usually (but not always) 1.
+6) Add a value to the end of the highorlowlist array on line 46. This should be
+   1 if you have an un-ambiguously tallest peak, 2 if you want to reference and
+   shim on the most downfield of your "tall" peaks, and 3 if you want to
+   reference and shim on the most upfield of them.
+7) Add a value to the end of the multiplicitylist array on line 47. This should
+   be 1 if the multiplet selected in step 6 is a singlet, triplet, pentet etc. and
+   2 if the multiplet is a doublet, quartet, etc.
+8) Add the shift to the end of the solvpeaklist array on line 48. This is the
+   value you want to reference your selected multiplet to be. Note that the shift
+   of your solvent neat (as opposed to dilute in CDCl3) may not be common knowledge,
+   and you may choose to collect a spectrum of TMS in your solvent to determine
+   this shift. Note also that I have not bothered to do this for the currently
+   provided shift array!
+    
+## Usage
+
+Running manually in Topspin, insert your sample, turn the lock-sweep off, specify 
+the (protonated) solvent, and tune/match. You can then run 1Hsolv_fieldfixshim in
+the command line and the macro will set the field and shim. There will be a 1H 
+spectrum in expno 90X where X is the expno you were in when you ran the program.
+
+In ICON-NMR, you can edit the solvent-specific locking and shimming programs in
+the configuration. Set the lock program for each of your protonated solvents to
+'LOCK-OFF' and the shim program to '1Hsolv_fieldfixshim.'
 
 
 
