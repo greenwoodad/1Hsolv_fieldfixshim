@@ -1,7 +1,5 @@
 # 1Hsolv_fieldfixshim
 
-(This README is not yet complete)
-
 Topspin macro to adjust field and shim on proton signal of non-deuterated NMR solvents
 
 1Hsolv_fieldfixshim is a Topspin AU program that iteratively shims and sets the  
